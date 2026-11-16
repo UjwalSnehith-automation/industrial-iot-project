@@ -1,59 +1,62 @@
 # Multi-Plant IIoT Gateway Project
 
-A sample project I built to collect machine data from three production plants, organize it using the ISA-95 standard, stream it over MQTT, store it centrally, automate control actions, and add real-time anomaly detection.
+A robust edge-to-cloud industrial IoT architecture built to collect machine telemetry from three production plants, organize it using ANSI/ISA-95 standards, stream it securely over MQTT, store it centrally, enforce operator safety interlocks, and provide real-time ML-based anomaly detection.
 
----
 
 ## 1. Protocol Choice: Why OPC UA and MQTT?
 
-To connect the physical machines to our central system, I split the communication into two layers:
+To connect physical factory floors to the central platform, communication is split into two specialized layers:
 
-*   **At the machines (OPC UA):** 
-    *   Most modern industrial controllers speak OPC UA out of the box, so I didn't need custom hardware drivers.
-    *   Its browsable tree structure mapped naturally onto our ISA-95 equipment hierarchy.
-    *   The gateway uses event-driven subscriptions instead of constantly polling the machines, which saves a lot of network bandwidth.
+**At the Machines (OPC UA):** 
+  - Most modern industrial controllers support OPC UA natively, eliminating custom hardware driver overhead.
+  - Its browsable address space maps naturally onto standard plant hierarchies.
+  - The gateway utilizes asynchronous event-driven subscriptions instead of continuous polling, significantly reducing network bandwidth and CPU load.
 
-*   **Between plants and the center (MQTT):**
-    *   It is lightweight and works great over slower or variable network links.
-    *   The publish/subscribe model decouples producers and consumers—our dashboard and storage services just listen to topics without the plants needing to know who is listening.
-    *   Plant gateways connect outward to the central broker, meaning we don't need risky inbound firewall holes into plant networks.
+**Between Plants and the Center (MQTT):**
+  - Extremely lightweight protocol ideal for variable or constrained industrial network links.
+  - The publish/subscribe architecture decouples producers from consumers; storage and visualization microservices listen to topics independently.
+  - Gateways initiate outbound TCP connections from the plant network to the central broker, avoiding risky inbound firewall holes.
 
----
+## 2. ISA-95 Architecture Mapping
 
-## 2. ISA-95 Structure
+To ensure compliance with ANSI/ISA-95 enterprise-control system integration standards, this project explicitly separates the physical asset model from the software functional levels.
 
-To keep everything organized and scalable, every data point follows a 6-level hierarchy defined in a single configuration file (`config/plants.yaml`):
+### A. Physical Equipment Hierarchy (Asset Model)
+Data points and OPC UA nodes follow a standardized 5-level naming convention defined in `config/plants.yaml`:
 
-$$\text{Enterprise} > \text{Site} > \text{Area} > \text{Line} > \text{Cell} > \text{Metric}$$
+$$\text{Enterprise} > \text{Site} > \text{Area} > \text{Line} > \text{Cell}$$
 
-*Example Topic:* `reckoning/plant_kronach/process_lab/process_line_1/printer_1/temperature`
+*Example Topic:* `enterprise/plant_kronach/assembly/line_1/cell_1/telemetry`
 
-Because this path serves as both the OPC UA address and the MQTT topic, adding new machines or plants later requires zero code changes.
-
----
+### B. ISA-95 Functional Levels (Software Architecture)
+- **Level 0 (Physical Process):** Simulated physical machinery (motor temperatures, power draw, part counts).
+- **Level 1 (Sensing & Control):** OPC UA servers exposing real-time tags and process variables.
+- **Level 2 (Supervisory Edge Gateway):** Python IIoT gateway reading OPC UA subscriptions, executing local data normalization, and capturing dual timestamps (`source_timestamp` vs. `received_timestamp`).
+- **Level 3 (Operations / MES):** MQTT broker and SQLite persistence layer routing telemetry and fault alarms.
+- **Level 4 (Business Planning / ERP):** Streamlit dashboard and cross-plant analytics layer.
 
 ## 3. What I Built
 
-I organized the project into modular parts:
-1. **Three simulated plants (`simulators/`):** OPC UA servers for Coburg, Kronach, and Bamberg with 10 total machine cells reporting temperature, power, part count, and status.
-2. **The Gateway (`gateway/`):** Asynchronously reads all plant servers, normalizes the data into standard JSON, and publishes it over MQTT.
-3. **The Center (`central/`):** Listens to MQTT, saves every reading into SQLite (`data.db`), and runs our automation rules.
-4. **The Dashboard (`dashboard/`):** A Streamlit web UI that shows real-time data and runs an Isolation Forest model to spot unusual machine behavior.
-
----
+The project is structured into modular, decoupled packages:
+1. **Simulators (`simulators/`):** Three OPC UA servers representing Coburg, Kronach, and Bamberg plants featuring 10 total machine cells.
+2. **Gateway (`gateway/`):** Asynchronous client reading OPC UA nodes, stamping telemetry with source and ingestion times, and publishing normalized JSON over MQTT.
+3. **Central Platform (`central/`):** MQTT event listener persisting all readings into SQLite (`data.db`) and managing alarm states.
+4. **Dashboard (`dashboard/`):** Streamlit web interface displaying real-time plant metrics and running an unsupervised **Isolation Forest** model for anomaly detection.
 
 ## 4. Automation, Safety & Machine Learning
 
-*   **Rule Engine:** When a machine reports `status = 2` (fault), the center automatically issues a `reset` command.
-*   **Circuit Breaker:** To prevent infinite loops on broken hardware, resets are capped at 3 per machine within 60 seconds. If it keeps failing, the system pauses resets and logs a `"maintenance needed"` alert.
-*   **Security:** The gateway whitelists the `reset` command and ensures commands are non-retained so old instructions never run after a restart.
-*   **Machine Learning (Anomaly Detection):** The dashboard runs an unsupervised **Isolation Forest** model on incoming telemetry (`temperature`, `power`, `status`). It flags statistically rare operating points in real time without needing pre-labeled training data, complete with a user-adjustable sensitivity slider.
+- **Human-in-the-Loop (HITL) Safety:** To comply with industrial safety principles (preventing unexpected machine restarts while an operator services a cell), automated resets have been removed. When a machine faults (`status = 2`), the system triggers an operator alert (`requires_operator_ack: true`) requiring explicit manual intervention.
+- **Telemetry Integrity:** The normalizer preserves both `source_timestamp` (generated at the machine PLC) and `received_timestamp` (ingested at the edge gateway) to accurately calculate network propagation jitter and support historical backfilling.
+- **Machine Learning (Anomaly Detection):** The dashboard runs an unsupervised **Isolation Forest** model on incoming telemetry (`temperature`, `power`, `status`) to flag statistically rare operating points in real time with adjustable sensitivity.
 
----
+## 5. Security & Production Readiness
 
-## 5. How to Run the Demo
+- **Local Demo Scope:** For zero-friction local reproducibility, this demonstration uses unencrypted OPC UA (`NoSecurity`) and an anonymous MQTT broker.
+- **Production Hardening Requirements:**
+  - **OT Layer (OPC UA):** Enforce `Basic256Sha256` (`SignAndEncrypt`) with X.509 mutual certificate exchange between the gateway and plant controllers.
+  - **IT/OT Boundary (MQTT):** Enforce TLS 1.3 encryption (port 8883), disable anonymous connections, require client token/certificate authentication, and enforce strict topic ACLs.
 
-I created a master script to start the entire environment with a single command:
+## 6. How to Run the Demo
 
 ```bash
 python -m venv .venv
