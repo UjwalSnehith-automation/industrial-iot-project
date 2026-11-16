@@ -11,7 +11,7 @@ async def run_plant(cfg, plant_index):
 
     server = Server()
     await server.init()
-    server.set_endpoint(f"opc.tcp://0.0.0.0:{plant['opcua_port']}/")
+    server.set_endpoint(f"opc.tcp://127.0.0.1:{plant['opcua_port']}/")
     server.set_server_name(plant["name"])
     server.set_security_policy([ua.SecurityPolicyType.NoSecurity])
     idx = await server.register_namespace(f"urn:{enterprise}:{plant['id']}")

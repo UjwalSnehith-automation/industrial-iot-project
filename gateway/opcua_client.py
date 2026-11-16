@@ -15,7 +15,11 @@ class Handler:
 
     def datachange_notification(self, node, value, data):
         path = self.paths[node.nodeid.to_string()]
-        self.on_message(normalize(path, value, self.units))
+        try:
+            source_time = data.monitored_item.Value.SourceTimestamp
+        except AttributeError:
+            source_time = None
+        self.on_message(normalize(path, value, self.units, source_time))
 
 async def wait_and_apply_command(client, idx, commands, timeout=2):
     if commands is None:
