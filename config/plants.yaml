@@ -1,0 +1,51 @@
+enterprise: reckoning
+
+broker:
+  host: localhost
+  port: 1883
+
+metrics:
+  temperature: degC
+  power: kW
+  part_count: pieces
+  status: "0=idle, 1=running, 2=fault"
+
+plants:
+  - id: plant_coburg
+    name: "Reckoning Decision Lab"
+    opcua_port: 4841
+    areas:
+      - id: decision_lab
+        lines:
+          - id: decision_line_1
+            cells: [robot_arm_1, test_rig_1]
+          - id: decision_line_2
+            cells: [robot_arm_2, test_rig_2]
+
+  - id: plant_kronach
+    name: "Reckoning Process Lab"
+    opcua_port: 4842
+    areas:
+      - id: process_lab
+        lines:
+          - id: process_line_1
+            cells: [printer_1, printer_2]
+          - id: process_line_2
+            cells: [cnc_1, cnc_2]
+
+  - id: plant_bamberg
+    name: "Reckoning Insight Lab"
+    opcua_port: 4843
+    areas:
+      - id: insight_lab
+        lines:
+          - id: insight_line_1
+            cells: [sensor_station_1, packaging_1]
+
+rules:
+  - id: auto_reset_on_fault
+    metric: status
+    equals: 2
+    command: reset
+    max_resets: 3
+    window_seconds: 60
