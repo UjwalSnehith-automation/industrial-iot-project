@@ -1,7 +1,6 @@
 import os
 import sqlite3
 import tempfile
-
 from central.data_processor import RuleEngine
 from central.storage import Storage
 
@@ -28,8 +27,6 @@ def fault_and_recover(engine, cell="cnc_2"):
     engine.process(reading("status", 2, cell))
     engine.process(reading("status", 0, cell))
 
-
-# --- basic rule engine ---------------------------------------------------------
 
 def test_fault_triggers_exactly_one_command():
     sent = []
@@ -76,16 +73,14 @@ def test_storage_saves_readings_and_actions():
         assert db.execute("SELECT rule, command FROM actions").fetchall() == [("auto_reset_on_fault", "reset")]
 
 
-# --- circuit breaker (reset limit) ---------------------------------------------
-
 def test_breaker_stops_commands_and_alerts_once():
     sent, alerts, clock = [], [], FakeClock()
     engine = RuleEngine([LIMITED], lambda p, r: sent.append(1), lambda p, r: alerts.append(p["cell"]), clock)
-    for t in (0, 10, 20, 30):          # four faults within one window
+    for t in (0, 10, 20, 30):         
         clock.now = t
         fault_and_recover(engine)
-    assert len(sent) == 2              # only the first two get a reset
-    assert alerts == ["cnc_2"]         # and exactly one alert, not two
+    assert len(sent) == 2             
+    assert alerts == ["cnc_2"]         
 
 
 def test_breaker_resets_after_the_window():
@@ -95,9 +90,9 @@ def test_breaker_resets_after_the_window():
         clock.now = t
         fault_and_recover(engine)
     assert len(sent) == 2 and len(alerts) == 1
-    clock.now = 100                    # old commands are outside the 60 s window
+    clock.now = 100                   
     fault_and_recover(engine)
-    assert len(sent) == 3              # automation works again
+    assert len(sent) == 3              
 
 
 def test_breaker_counts_machines_separately():
@@ -117,3 +112,12 @@ def test_rule_without_limit_never_blocks():
         clock.now = t
         fault_and_recover(engine)
     assert len(sent) == 10
+
+def test_on_clear_is_called_when_the_fault_ends():
+    cleared = []
+    engine = RuleEngine([RULE], lambda p, r: None, on_clear=lambda p, r: cleared.append(p["cell"]))
+    engine.process(reading("status", 0))             
+    engine.process(reading("status", 2))
+    engine.process(reading("status", 0))
+    engine.process(reading("status", 0))              
+    assert cleared == ["cnc_2"]

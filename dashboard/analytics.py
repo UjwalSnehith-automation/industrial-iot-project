@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 import pandas as pd
@@ -5,6 +6,7 @@ from sklearn.ensemble import IsolationForest
 
 FEATURES = ["temperature", "power", "status"]
 CELL_COLS = ["plant", "area", "line", "cell"]
+
 
 def _read(db_path, query, columns):
     if not os.path.exists(db_path):
@@ -18,14 +20,32 @@ def _read(db_path, query, columns):
     df["ts"] = pd.to_datetime(df["ts"], utc=True, format="ISO8601")
     return df.sort_values("ts").reset_index(drop=True)
 
+
 def load_readings(db_path="data.db", limit=50000):
     query = f"SELECT * FROM readings ORDER BY ts DESC LIMIT {int(limit)}"
     return _read(db_path, query, ["ts", *CELL_COLS, "metric", "value"])
+
 
 def load_actions(db_path="data.db", limit=200):
     query = f"SELECT * FROM actions ORDER BY ts DESC LIMIT {int(limit)}"
     df = _read(db_path, query, ["ts", *CELL_COLS, "rule", "command"])
     return df.sort_values("ts", ascending=False).reset_index(drop=True)
+
+
+def load_alerts(db_path="data.db", limit=500):
+    columns = ["id", "ts", *CELL_COLS, "rule", "command", "state", "ack_ts", "ack_by"]
+    query = f"SELECT * FROM alerts ORDER BY id DESC LIMIT {int(limit)}"
+    df = _read(db_path, query, columns)
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    df["ack_ts"] = pd.to_datetime(df["ack_ts"], utc=True, format="ISO8601", errors="coerce")
+    return df.sort_values("id", ascending=False).reset_index(drop=True)
+
+
+def ack_message(enterprise, alert, operator):
+    topic = "/".join([enterprise, alert["plant"], alert["area"], alert["line"], alert["cell"], "ack"])
+    return topic, json.dumps({"operator": operator, "rule": alert["rule"]})
+
 
 def cell_frame(df, plant, area, line, cell):
     sel = df[(df.plant == plant) & (df.area == area) & (df.line == line) & (df.cell == cell)]
@@ -33,6 +53,7 @@ def cell_frame(df, plant, area, line, cell):
         return pd.DataFrame(columns=FEATURES)
     wide = sel.pivot_table(index="ts", columns="metric", values="value", aggfunc="last")
     return wide.resample("1s").last().ffill().dropna()
+
 
 def detect_anomalies(frame, contamination=0.02, min_rows=50):
     out = frame.copy()
@@ -45,6 +66,7 @@ def detect_anomalies(frame, contamination=0.02, min_rows=50):
     out["anomaly"] = model.predict(out[FEATURES]) == -1
     out["score"] = model.score_samples(out[FEATURES])
     return out
+
 
 def latest_values(df):
     if df.empty:

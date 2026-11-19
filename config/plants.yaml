@@ -43,9 +43,8 @@ plants:
             cells: [sensor_station_1, packaging_1]
 
 rules:
-  - id: auto_reset_on_fault
+  - id: fault_reset
     metric: status
     equals: 2
     command: reset
-    max_resets: 3
-    window_seconds: 60
+    requires_ack: true

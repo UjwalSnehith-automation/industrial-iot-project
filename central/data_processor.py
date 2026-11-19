@@ -3,15 +3,16 @@ from collections import defaultdict, deque
 
 
 class RuleEngine:
-    
-    def __init__(self, rules, send_command, escalate=None, clock=time.monotonic):
+
+    def __init__(self, rules, send_command, escalate=None, clock=time.monotonic, on_clear=None):
         self.rules = rules
         self.send_command = send_command   
         self.escalate = escalate           
-        self.clock = clock                 
+        self.on_clear = on_clear           
+        self.clock = clock                
         self.active = set()                
         self.history = defaultdict(deque)  
-        self.alerted = set()               
+        self.alerted = set()              
 
     def _allowed(self, rule, key):
         limit = rule.get("max_resets")
@@ -42,5 +43,7 @@ class RuleEngine:
                         self.alerted.add(key)
                         if self.escalate:
                             self.escalate(payload, rule)
-            else:
+            elif key in self.active:
                 self.active.discard(key)
+                if self.on_clear:
+                    self.on_clear(payload, rule)

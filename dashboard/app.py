@@ -1,8 +1,13 @@
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent)) 
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT_DIR))   # so 'config' can be imported
+
 import altair as alt
+import paho.mqtt.client as mqtt
 import streamlit as st
+
 import analytics
 from config.loader import load_config
 
@@ -13,17 +18,56 @@ cfg = load_config()
 plant_names = {p["id"]: p["name"] for p in cfg["plants"]}
 st.title(f"{cfg['enterprise']}: machine data from three plants")
 
+
 @st.cache_data(ttl=2)   
 def get_data(db_path):
-    return analytics.load_readings(db_path), analytics.load_actions(db_path)
+    return analytics.load_readings(db_path), analytics.load_actions(db_path), analytics.load_alerts(db_path)
 
-db_path = st.sidebar.text_input("Database file", "data.db")
+
+def send_ack(alert, operator):
+    topic, payload = analytics.ack_message(cfg["enterprise"], alert, operator)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.connect(cfg["broker"]["host"], cfg["broker"]["port"])
+    client.loop_start()
+    try:
+        client.publish(topic, payload, qos=1).wait_for_publish(timeout=5)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+
+
+db_path = st.sidebar.text_input("Database file", str(ROOT_DIR / "data.db"))
 st.sidebar.button("Refresh")   
-readings, actions = get_data(db_path)
+operator = st.sidebar.text_input("Operator name (needed to acknowledge)")
+readings, actions, alerts = get_data(db_path)
 
 if readings.empty:
     st.warning("No data yet. Start the broker, simulators, gateway and center first.")
     st.stop()
+
+st.subheader("Faults waiting for an operator")
+open_alerts = alerts[alerts.state == "open"]
+if open_alerts.empty:
+    st.success("No open alerts.")
+else:
+    st.warning(f"{len(open_alerts)} machine(s) in fault. A reset is only sent after an operator acknowledges.")
+    if not operator.strip():
+        st.info("Enter your operator name in the sidebar to enable the buttons.")
+    for row in open_alerts.itertuples():
+        text, button = st.columns([4, 1])
+        text.write(f"**{plant_names.get(row.plant, row.plant)}** / {row.area} / {row.line} / {row.cell}"
+                   f" - fault since {row.ts:%H:%M:%S} UTC")
+        if button.button("Acknowledge and reset", key=f"ack_{row.id}", disabled=not operator.strip()):
+            try:
+                send_ack(row._asdict(), operator.strip())
+                st.success(f"Acknowledgement sent for {row.cell}. The reset follows in a moment, press Refresh.")
+            except Exception as error:
+                st.error(f"Could not send the acknowledgement: {error}")
+
+done = alerts[alerts.state == "acknowledged"]
+if not done.empty:
+    st.caption("Recently acknowledged")
+    st.dataframe(done[["ack_ts", "plant", "cell", "rule", "ack_by"]].head(10), hide_index=True)
 
 st.subheader("Latest values of all machines")
 overview = analytics.latest_values(readings)
@@ -31,11 +75,10 @@ overview["status"] = overview["status"].map(lambda s: STATUS_NAMES.get(int(s), "
 overview.insert(0, "plant name", overview["plant"].map(plant_names))
 st.dataframe(overview, hide_index=True)
 
-st.subheader("Automatic actions taken by the rule engine")
+st.subheader("Commands sent to machines")
 if actions.empty:
-    st.info("No automatic actions yet. They appear when a machine reports a fault.")
+    st.info("No commands sent yet. A command is only sent after an operator acknowledges a fault.")
 else:
-    st.write(f"{len(actions)} recent actions")
     st.dataframe(actions, hide_index=True)
 
 st.sidebar.header("Machine")

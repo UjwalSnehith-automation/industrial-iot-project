@@ -3,21 +3,23 @@ import random
 
 FAULT_CHANCE = float(os.environ.get("FAULT_CHANCE", "0.03"))
 
+REPAIR_CHANCE = float(os.environ.get("REPAIR_CHANCE", "0.0"))
+
 
 class MachineModel:
+
     def __init__(self):
         self.temperature = 25.0
         self.part_count = 0
         self.status = 0
 
     def apply_command(self, command):
-        """A reset only works when the machine is in fault state."""
         if command == "reset" and self.status == 2:
             self.status = 0
 
     def step(self):
         if self.status == 2:
-            if random.random() < 0.15:
+            if random.random() < REPAIR_CHANCE:
                 self.status = 0
         elif self.status == 0:
             if random.random() < 0.20:

@@ -8,19 +8,28 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-
 from config.loader import load_config
 
 ROOT = Path(__file__).resolve().parent
 LOGS = ROOT / "logs"
 PY = sys.executable
 
-
 def port_in_use(port):
     with socket.socket() as s:
         s.settimeout(0.5)
         return s.connect_ex(("127.0.0.1", port)) == 0
 
+READY_TIMEOUT = 20   
+
+def wait_for_port(port, proc, timeout=None):
+    deadline = time.time() + (READY_TIMEOUT if timeout is None else timeout)
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            return False
+        if port_in_use(port):
+            return True
+        time.sleep(0.3)
+    return False
 
 def broker_command():
     exe = shutil.which("amqtt", path=str(Path(PY).parent)) or shutil.which("amqtt")
@@ -28,34 +37,29 @@ def broker_command():
         sys.exit("amqtt not found. Install it with: pip install amqtt")
     return [exe, "-c", "config/amqtt.yaml"]
 
-
-def build_steps(dashboard=False):
-    """(name, command, seconds to wait afterwards), in start order."""
-    steps = [
-        ("broker", broker_command(), 2),
-        ("plant_1", [PY, "-m", "simulators.plant_1"], 0),
-        ("plant_2", [PY, "-m", "simulators.plant_2"], 0),
-        ("plant_3", [PY, "-m", "simulators.plant_3"], 3),
-        ("gateway", [PY, "-m", "gateway.main"], 3),
-        ("center", [PY, "-m", "central.mqtt_subscriber"], 1),
-    ]
+def build_steps(cfg, dashboard=False):
+    steps = [("broker", broker_command(), 0, cfg["broker"]["port"])]
+    for number, plant in enumerate(cfg["plants"], start=1):
+        steps.append((f"plant_{number}", [PY, "-m", f"simulators.plant_{number}"], 0, plant["opcua_port"]))
+    steps.append(("gateway", [PY, "-m", "gateway.main"], 3))
+    steps.append(("center", [PY, "-m", "central.mqtt_subscriber"], 1))
     if dashboard:
         steps.append(("dashboard", [PY, "-m", "streamlit", "run", "dashboard/app.py",
-                                    "--server.headless", "true"], 3))
+                                    "--server.headless", "true"], 0, 8501))
     return steps
 
-
 def start_all(steps, env, cwd, logdir):
-    """Start every program. Returns (processes, name of a program that died or None)."""
     logdir.mkdir(exist_ok=True)
     procs = []
-    for name, command, wait in steps:
+    for name, command, wait, *rest in steps:
         log = open(logdir / f"{name}.log", "w")
         proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
                                 start_new_session=True)
         procs.append((name, proc))
         print(f"started {name}")
         time.sleep(wait)
+        if rest and not wait_for_port(rest[0], proc):    
+            return procs, name
         if proc.poll() is not None:
             return procs, name
     return procs, None
@@ -72,25 +76,24 @@ def stop_all(procs):
             proc.kill()
     print("everything stopped")
 
-
 def counts(db_path):
     try:
         db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         readings = db.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
-        actions = db.execute("SELECT COUNT(*) FROM actions").fetchone()[0]
-        last = db.execute("SELECT plant, cell, command FROM actions ORDER BY ts DESC LIMIT 1").fetchone()
+        open_alerts = db.execute("SELECT COUNT(*) FROM alerts WHERE state='open'").fetchone()[0]
+        resets = db.execute("SELECT COUNT(*) FROM alerts WHERE state='acknowledged'").fetchone()[0]
+        last = db.execute("SELECT plant, cell, ack_by FROM alerts WHERE state='acknowledged' "
+                          "ORDER BY ack_ts DESC LIMIT 1").fetchone()
         db.close()
-        return readings, actions, last
+        return readings, open_alerts, resets, last
     except Exception:
         return None
-
 
 def tail(path, lines=8):
     try:
         return "".join(Path(path).read_text().splitlines(keepends=True)[-lines:])
     except OSError:
         return ""
-
 
 def monitor(procs, db_path, seconds=5):
     while True:
@@ -101,10 +104,9 @@ def monitor(procs, db_path, seconds=5):
                 return
         info = counts(db_path)
         if info:
-            readings, actions, last = info
-            extra = f" | last: {last[0]}/{last[1]} -> {last[2]}" if last else ""
-            print(f"readings stored: {readings} | automatic actions: {actions}{extra}")
-
+            readings, open_alerts, resets, last = info
+            extra = f" | last: {last[0]}/{last[1]} by {last[2]}" if last else ""
+            print(f"readings stored: {readings} | open alerts: {open_alerts} | operator resets: {resets}{extra}")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -132,14 +134,14 @@ def main():
         db_path.unlink()
         print("deleted old data.db (use --keep-data to keep it)")
 
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}   
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}  
     if args.fast_faults:
         env["FAULT_CHANCE"] = "0.30"
 
-    procs, failed = start_all(build_steps(dashboard), env, ROOT, LOGS)
+    procs, failed = start_all(build_steps(cfg, dashboard), env, ROOT, LOGS)
     try:
         if failed:
-            print(f"\n{failed} stopped right after starting. Last log lines:\n{tail(LOGS / (failed + '.log'))}")
+            print(f"\n{failed} did not start properly. Last log lines:\n{tail(LOGS / (failed + '.log'))}")
         else:
             print("\nDemo is running. Press Ctrl+C to stop.")
             if dashboard:
